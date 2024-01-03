@@ -12,10 +12,24 @@ export const APIResponseMessage = {
 
 export const saltRounds = 10;
 
-export enum MerchantStatus {
+export enum SingleClientStatus {
   onBoarding = 'onBoarding',
   boarded = 'boarded',
   banned = 'banned',
 }
 
 export const tokenExpiresIn = 3600000;
+
+export enum Role {
+  ADMIN = 'ADMIN',
+  USER = 'USER',
+  GUEST = 'CLIENT',
+}
+
+export const RoleOrder: Record<Role, number> = {
+  [Role.GUEST]: 1,
+  [Role.USER]: 2,
+  [Role.ADMIN]: 3,
+};
+
+export const ROLE_KEY = 'role';

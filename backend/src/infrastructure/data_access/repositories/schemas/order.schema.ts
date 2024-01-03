@@ -1,12 +1,12 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Type } from 'class-transformer';
 import mongoose, { Document, Types } from 'mongoose';
-import { BaseDocument } from 'src/infrastructure/database';
+import { BaseDocument } from '../../../../infrastructure/database';
 import { IOrderDataModel } from '../models/order-model.interface';
-import { currentStatus, dinningType } from './../../../../order/order-entity.interface';
-import { MerchantDataModel } from './merchant.schema';
-import { OrderManagerDataModel } from './order-manger.schema';
+import { dinningType } from './../../../../order/order-entity.interface';
 import { CartItemDataModel } from './cartItem.schema';
+import { SingleClientDataModel } from './singleclient.schema';
+import { OrderManagerDataModel } from './order-manger.schema';
 import { OrderStatusModel } from './order-status.schema';
 
 export type OrderDocument = OrderDataModel & Document;
@@ -17,8 +17,8 @@ export class OrderDataModel extends BaseDocument implements IOrderDataModel {
   type: dinningType;
 
   @Prop({ type: mongoose.Schema.Types.ObjectId })
-  @Type(() => MerchantDataModel)
-  merchantId: Types.ObjectId;
+  @Type(() => SingleClientDataModel)
+  singleclientId: Types.ObjectId;
 
   @Prop({ type: mongoose.Schema.Types.ObjectId, required: false })
   @Type(() => OrderManagerDataModel)
@@ -30,11 +30,11 @@ export class OrderDataModel extends BaseDocument implements IOrderDataModel {
   @Prop({ type: Number, required: true })
   total: number;
 
-  @Prop({ type: [{ type: mongoose.Schema.Types.ObjectId, ref: () => CartItemDataModel }] })
+  @Prop({ type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'CartItemDataModel' }] })
   @Type(() => CartItemDataModel)
   cartItems?: CartItemDataModel[];
 
-  @Prop({ type: [{ type: mongoose.Schema.Types.ObjectId, ref: () => OrderStatusModel }] })
+  @Prop({ type: { type: mongoose.Schema.Types.ObjectId, ref: OrderStatusModel.name } })
   @Type(() => OrderStatusModel)
   state: OrderStatusModel;
 }

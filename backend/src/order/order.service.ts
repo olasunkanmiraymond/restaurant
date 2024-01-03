@@ -1,17 +1,20 @@
-import { OrderNoteMapper } from 'src/order_notes/order_note.mapper';
 import { HttpStatus, Inject } from '@nestjs/common';
-import { TYPES } from 'src/application';
-import { CartItem } from 'src/cart/cart-item';
-import { SelectedCartItem } from 'src/cart/selectedItems/selectedCartItem';
-import { Audit, Result } from 'src/domain';
-import { Context, IContextService, MerchantRepository } from 'src/infrastructure';
-import { ICartItemRepository } from 'src/infrastructure/data_access/repositories/interfaces/cart-item-repository.interface';
-import { IOrderRepository } from 'src/infrastructure/data_access/repositories/interfaces/order-repository.interface';
-import { CartItemDataModel } from 'src/infrastructure/data_access/repositories/schemas/cartItem.schema';
-import { OrderDataModel } from 'src/infrastructure/data_access/repositories/schemas/order.schema';
-import { SelectedCartItemRepository } from 'src/infrastructure/data_access/repositories/selected-cart-item.repository';
-import { throwApplicationError } from 'src/infrastructure/utilities/exception-instance';
-import { IMerchantService, Merchant } from 'src/merchant';
+import { Types } from 'mongoose';
+import { TYPES } from '../application';
+import { CartItem } from '../cart/cart-item';
+import { SelectedCartItem } from '../cart/selectedItems/selectedCartItem';
+import { Audit, Result } from '../domain';
+import { Context, IContextService, SingleClientRepository } from '../infrastructure';
+import { ICartItemRepository } from '../infrastructure/data_access/repositories/interfaces/cart-item-repository.interface';
+import { IOrderRepository } from '../infrastructure/data_access/repositories/interfaces/order-repository.interface';
+import { IOrderStatusRespository } from '../infrastructure/data_access/repositories/interfaces/order-status.repository';
+import { CartItemDataModel } from '../infrastructure/data_access/repositories/schemas/cartItem.schema';
+import { OrderDataModel } from '../infrastructure/data_access/repositories/schemas/order.schema';
+import { SelectedCartItemRepository } from '../infrastructure/data_access/repositories/selected-cart-item.repository';
+import { throwApplicationError } from '../infrastructure/utilities/exception-instance';
+import { ISingleClientService, SingleClient } from '../singleclient';
+import { IOrderNoteService } from '../order_notes/interface/order-note-service.interface';
+import { OrderNote } from '../order_notes/order_note';
 import { CartItemMapper } from './../cart/cart-item.mapper';
 import { SelectedCartItemMapper } from './../cart/selectedItems/selected-cart-item.mapper';
 import { CreateCartItemsDTO, CreateOrderDTO } from './dto/create-order.dto';
@@ -20,55 +23,53 @@ import { Order } from './order';
 import { IOrderResponseDTO } from './order-response.dto';
 import { OrderMapper } from './order.mapper';
 import { OrderParser } from './order.parser';
-import { IOrderStatusRespository } from 'src/infrastructure/data_access/repositories/interfaces/order-status.repository';
-import { OrderNote } from 'src/order_notes/order_note';
-import { IOrderNoteRespository } from 'src/infrastructure/data_access/repositories/interfaces/order-note.repository';
-import { OrderNoteParser } from 'src/order_notes/order_note_parser';
-import { IOrderNoteResponseDTO } from 'src/order_notes/dto/order-note-response';
-import { Types } from 'mongoose';
+import { IOrderProcessingQueueService } from '../order_processing_queue/interface/order-processing-queue-service.interface';
 
 export class OrderService implements IOrderService {
   private context: Context;
   constructor(
     @Inject(TYPES.IOrderRepository) private readonly orderRepository: IOrderRepository,
-    @Inject(TYPES.IMerchantService) private readonly merchantService: IMerchantService,
+    @Inject(TYPES.ISingleClientService) private readonly singleclientService: ISingleClientService,
     @Inject(TYPES.IContextService)
     private readonly contextService: IContextService,
-    private readonly merchantRepository: MerchantRepository,
+    private readonly singleclientRepository: SingleClientRepository,
     private readonly selectedCartItemRepository: SelectedCartItemRepository,
     private readonly orderMapper: OrderMapper,
     private readonly selectedItemMapper: SelectedCartItemMapper,
     private readonly cartItemMapper: CartItemMapper,
-    private readonly orderNoteMapper: OrderNoteMapper,
     @Inject(TYPES.ICartItemRepository) private readonly cartItemRepository: ICartItemRepository,
     @Inject(TYPES.IOrderStatusRepository) private readonly orderStatusRespository: IOrderStatusRespository,
-    @Inject(TYPES.IOrderNoteRepository) private readonly orderNoteRepository: IOrderNoteRespository,
+    @Inject(TYPES.IOrderNoteService) private readonly orderNoteService: IOrderNoteService,
+    @Inject(TYPES.IOrderProcessingQueueService)
+    private readonly OrderProcessingQueueService: IOrderProcessingQueueService,
   ) {
     this.context = this.contextService.getContext();
   }
 
   async createOrder(orderSummary: CreateOrderDTO): Promise<Result<IOrderResponseDTO>> {
-    await this.merchantService.validateContext();
-    const { state, type, merchantId, total, cartItems } = orderSummary;
-    const orderDuplicate = await this.orderRepository.getDuplicateOrder(type, merchantId, cartItems);
+    await this.singleclientService.validateContext();
+    const { state, type, singleclientId, total, cartItems } = orderSummary;
+    const orderDuplicate = await this.orderRepository.getDuplicateOrder(type, singleclientId, cartItems);
     if (orderDuplicate) {
       throwApplicationError(HttpStatus.NOT_FOUND, 'Duplicate order detected. Please confirm.');
     }
-    const validateMerchant: Result<Merchant> = await this.merchantRepository.findOne({ _id: merchantId });
-    if (!validateMerchant.isSuccess) {
-      throwApplicationError(HttpStatus.NOT_FOUND, `Merchant does not exist`);
+    const validateSingleClient: Result<SingleClient> = await this.singleclientRepository.findOne({
+      _id: singleclientId,
+    });
+    if (!validateSingleClient.isSuccess) {
+      throwApplicationError(HttpStatus.NOT_FOUND, `SingleClient does not exist`);
     }
     const session = await this.orderRepository.startSession();
-    session.startTransaction();
     try {
+      await session.startTransaction();
       const audit: Audit = Audit.createInsertContext(this.context);
-      const merchantObjId = this.orderRepository.stringToObjectId(merchantId);
+      const singleclientObjId = this.orderRepository.stringToObjectId(singleclientId);
       const getOrderStatus = await this.orderStatusRespository.findOne({ code: state.toUpperCase() });
       if (!getOrderStatus) {
         throwApplicationError(HttpStatus.INTERNAL_SERVER_ERROR, `Order status not found`);
       }
       const orderStatus = getOrderStatus.getValue();
-      const order: Order = Order.create({ state: orderStatus, type, total, merchantId: merchantObjId, audit });
+      const order: Order = Order.create({ state: orderStatus, type, total, singleclientId: singleclientObjId, audit });
       const orderModel: OrderDataModel = this.orderMapper.toPersistence(order);
       const orderToSave: Result<Order> = await this.orderRepository.createOrder(orderModel);
       const savedOrder = orderToSave.getValue();
@@ -83,6 +84,7 @@ export class OrderService implements IOrderService {
         const savedCartItems: Result<CartItem[]> = await this.cartItemRepository.insertMany(cartItemDataModels);
         const savedItems = savedCartItems.getValue();
         savedOrder.cartItems = savedItems;
+        savedOrder.state = orderStatus;
         const orderWithCartItems = await this.orderRepository.upsert(
           { _id: orderId },
           this.orderMapper.toPersistence(savedOrder),
@@ -116,13 +118,11 @@ export class OrderService implements IOrderService {
         const insertedItems: Result<SelectedCartItem[]> = await this.selectedCartItemRepository.insertMany(
           selectedCartItemsDataModel,
         );
-        let response: IOrderResponseDTO | undefined;
-        const notes = await this.createOrderNotes(cartItems, orderId, audit);
-        if (insertedItems.isSuccess) {
-          response = OrderParser.createOrderResponse(savedOrder, notes);
-        } else {
+        const notes = await this.createOrderNotes(cartItems, orderId);
+        if (!insertedItems.isSuccess) {
           throwApplicationError(HttpStatus.INTERNAL_SERVER_ERROR, `Could not create an order`);
         }
+        const response: IOrderResponseDTO | undefined = OrderParser.createOrderResponse(savedOrder, notes);
         const savedSelectedItems = insertedItems.getValue();
         const savedItemsMap = savedSelectedItems.reduce((map, item) => {
           const cartItemIdToString = this.cartItemRepository.objectIdToString(item.cartItemId);
@@ -135,44 +135,38 @@ export class OrderService implements IOrderService {
           }
         });
         await this.cartItemRepository.updateCartItemSelectedItems(savedItems);
+        await this.createOrderStatusQueue(orderStatus.id, orderId);
         await session.commitTransaction();
         return Result.ok(response);
       }
     } catch (error) {
       console.error(error);
       await session.abortTransaction();
+      return Result.fail('An error occurred during order creation.', HttpStatus.BAD_REQUEST);
     } finally {
       await session.endSession();
     }
   }
 
-  async getOrders(): Promise<Result<Order[]>> {
-    return await this.orderRepository.find({});
+  async getOrdersBasic(): Promise<IOrderResponseDTO[]> {
+    const result = await this.orderRepository.getOrders();
+    const response = OrderParser.createOrdersResponse(result.getValue());
+    return response;
   }
 
-  async createOrderNotes(
-    cartItems: CreateCartItemsDTO[],
-    orderId: Types.ObjectId,
-    audit: Audit,
-  ): Promise<IOrderNoteResponseDTO[]> {
-    try {
-      const orderNotes = cartItems.map((item) => {
-        return {
-          menuId: item.menuId,
-          note: item.note ? item.note : '',
-          orderId: orderId,
-        };
-      });
-      const createOrderNotes: OrderNote[] = orderNotes.map((note) => OrderNote.create({ ...note, audit }));
-      const notesToBeSaved = createOrderNotes.map((note) => this.orderNoteMapper.toPersistence(note));
-      const result: Result<OrderNote[]> = await this.orderNoteRepository.insertMany(notesToBeSaved);
-      let response: IOrderNoteResponseDTO[] | undefined;
-      if (result.isSuccess) {
-        response = OrderNoteParser.createOrderStatusResponses(result.getValue());
-      }
-      return response;
-    } catch (error) {
-      console.error(error);
-    }
+  async createOrderNotes(cartItems: CreateCartItemsDTO[], orderId: Types.ObjectId): Promise<OrderNote[]> {
+    const orderNotes = cartItems.map(({ menuId, note }: CreateCartItemsDTO) => {
+      return {
+        menuId,
+        note: note || '',
+        orderId: orderId,
+      };
+    });
+    const notes = await this.orderNoteService.createNotes(orderNotes);
+    return notes.getValue();
+  }
+
+  async createOrderStatusQueue(orderStatusId: Types.ObjectId, orderId: Types.ObjectId) {
+    return this.OrderProcessingQueueService.createQueue({ orderStatusId, orderId });
   }
 }
